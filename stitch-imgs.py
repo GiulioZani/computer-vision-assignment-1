@@ -2,15 +2,19 @@ import cv2
 from cv2 import KeyPoint
 import matplotlib.pyplot as plt
 import numpy as np
-import random
-import ipdb
 from argparse import ArgumentParser
 from scipy.spatial.distance import cdist
 from tqdm import tqdm
 import json
 import os
-from tomark import Tomark
 from skimage.feature import corner_harris, corner_subpix, corner_peaks
+import ipdb
+
+tomark_installed = True
+try:
+    from tomark import Tomark
+except ImportError as e:
+    tomark_installed = False
 
 
 def compute_corner_harris(image: np.ndarray, save_path: str):
@@ -30,13 +34,8 @@ def compute_corner_harris(image: np.ndarray, save_path: str):
     ax.plot(sub_pix[:, 1], sub_pix[:, 0], "+r", markersize=15)
     ax.imshow(image, cmap=plt.cm.gray)
     plt.savefig(os.path.join(save_path, "corner_harris.png"))
-
-
-# coords = corner_peaks(corner_harris(image), min_distance=5, threshold_rel=0.02)
-# coords_subpix = corner_subpix(image, coords, window_size=13)
-
-# harris_corner(left_gray)
-# harris_corner(right_gray)
+    plt.clf()
+    plt.close()
 
 
 def draw_keypoints_on_img(
@@ -139,7 +138,7 @@ def ransac(
     relative_sample_size: float,
     iters: int,
     distance_threshold: float,
-    accepted_threshold: float = 0.2,
+    accuracy_threshold: float = 0.2,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     # sample size is computed and 10 is the minimum
     sample_size = max(10, int(len(matches) * relative_sample_size))
@@ -147,7 +146,7 @@ def ransac(
     # define accumulators
     models = []
     errors = []
-    respecting_vals = []
+    accuracies = []
     permuting_indices = []  # used to get the resulting out/in liers
     for _ in tqdm(range(iters)):
         permutation = np.random.permutation(len(matches))
@@ -172,9 +171,9 @@ def ransac(
                 )
                 ** 2
             )
-            # compute ratio between inliers and outliers
-            respecting = np.sum(error < distance_threshold) / len(error)
-            respecting_vals.append(respecting)
+            # compute ratio between inliers and (inliers + outliers)
+            accuracy = np.sum(error < distance_threshold) / len(matches)
+            accuracies.append(accuracy)
             errors.append(
                 error[error < distance_threshold].mean()
                 if (error < distance_threshold).any()
@@ -182,11 +181,11 @@ def ransac(
             )
             models.append(model)
             permuting_indices.append(permutation)
-    accepted_indices = np.flip(np.argsort(respecting_vals))[
-        : max(int(accepted_threshold * len(respecting_vals)), 1)
+    accepted_indices = np.flip(np.argsort(accuracies))[
+        : max(int(accuracy_threshold * len(accuracies)), 1)
     ]
     target_index = np.argmin(np.array(errors)[accepted_indices])
-    respecting_metric = respecting_vals[target_index]
+    accuracy = accuracies[target_index]
     error_metric = errors[target_index]
     target_model = np.array(models)[accepted_indices][target_index]
     target_permutation = np.array(permuting_indices)[accepted_indices][
@@ -197,7 +196,7 @@ def ransac(
         target_model,
         target_permuted_matches[:sample_size],
         target_permuted_matches[sample_size:],
-        respecting_metric,
+        accuracy,
         error_metric,
     )
 
@@ -217,6 +216,7 @@ def stitch_imgs_given_model(
     # left image
     left_height, left_width, _ = left_img.shape
     left_sizes = np.array([left_width, left_height])
+    # compute the corners
     corners = np.array(
         [
             [0, 0, 1],
@@ -225,24 +225,27 @@ def stitch_imgs_given_model(
             [0, left_height, 1],
         ]
     )
+    # transform them
     corners_transformed = np.einsum("ij,kj->ik", model, corners)
     corners_transformed = corners_transformed[:2] / corners_transformed[2]
     mins = np.min(corners_transformed, axis=1)
     x_min, y_min = mins
+    # compute the translation matrix
     translation_mat = np.array([[1, 0, -x_min], [0, 1, -y_min], [0, 0, 1]])
     new_model = np.einsum("ij,jk->ik", translation_mat, model)
+    # compute left img warped
     left_warped_size = np.round(np.abs(mins) + left_sizes).astype(int)
     left_warped = cv2.warpPerspective(
         src=left_img, M=new_model, dsize=left_warped_size
     )
-
-    # right image
+    # warp right img
     right_sizes = np.flip(right_img.shape[:2])
     right_warped_size = np.round(np.abs(mins) + right_sizes).astype(int)
     right_warped = cv2.warpPerspective(
         src=right_img, M=translation_mat, dsize=right_warped_size
     )
-
+    # Select each pixel so that it comes either from left or right image according
+    # to which image has non-black pixel.
     return np.array(
         tuple(
             tuple(
@@ -314,8 +317,9 @@ def stitch(
     ransac_iters: int = 100,
     ransac_sample_size: int = 20,
     ransac_distance_threshold: float = 0.1,
-    ransac_accepted_threshold: float = 0.1,
+    ransac_accuracy_threshold: float = 0.1,
     distance_method: str = "eucledian",
+    compute: bool = True,
 ):
     left_gray_img, left_rgb_img = read_img(left_img_path)
     right_gray_img, right_rgb_img = read_img(right_img_path)
@@ -358,33 +362,60 @@ def stitch(
     model, inliers, outliers, accuracy_metric, error_metric = ransac(
         matches=matches,
         distance_threshold=ransac_distance_threshold,
-        accepted_threshold=ransac_accepted_threshold,
+        accuracy_threshold=ransac_accuracy_threshold,
         relative_sample_size=ransac_sample_size,
         iters=ransac_iters,
     )
     # if do_plot:
     #    plot_ransac(model, inliers, outliers)
-    stiched_img = stitch_imgs_given_model(left_rgb_img, right_rgb_img, model)
-    plt.imshow(stiched_img)
-    plt.savefig(os.path.join(save_path, "stitched.png"))
+    if compute:
+        stiched_img = stitch_imgs_given_model(
+            left_rgb_img, right_rgb_img, model
+        )
+        plt.imshow(stiched_img)
+        plt.savefig(os.path.join(save_path, "stitched.png"))
     return {"accuracy": accuracy_metric, "error": error_metric}
 
 
 def print_resuts(args, results):
-    print("### Hyperparameters")
-    print(
-        Tomark.table(
-            [
-                {
-                    k.replace("_", " "): v
-                    for k, v in args.items()
-                    if "path" not in k
-                }
-            ]
+    if tomark_installed:
+        print("### Hyperparameters")
+        print(
+            Tomark.table(
+                [
+                    {
+                        k.replace("_", " "): v
+                        for k, v in args.items()
+                        if "path" not in k
+                    }
+                ]
+            )
         )
-    )
-    print("### Results")
-    print(Tomark.table([{k: round(v, 5) for k, v in results.items()}]))
+        print("### Results")
+        print(Tomark.table([{k: round(v, 5) for k, v in results.items()}]))
+
+
+def experiment(params):
+    key = "ransac_accuracy_threshold"
+    values = np.linspace(0.01, 0.5, 10)
+    results = []
+    for val in values:
+        params[key] = val
+        # print(json.dumps(params, indent=4))
+        result = stitch(**params, compute=False)
+        results.append((val, result["accuracy"], result["error"]))
+
+    results = np.array(results).T
+    plt.clf()
+    plt.close()
+    keys = ["accuracy", "error"]
+    _, axis = plt.subplots(2)
+    for i in range(results.shape[0] - 1):
+        axis[i].plot(
+            results[0], results[i + 1],
+        )
+        axis[i].set_title(keys[i])
+    plt.show()
 
 
 def main():
@@ -403,22 +434,57 @@ def main():
         nargs="?",
         default="./sample_images/2r.jpg",
     )
-    parser.add_argument("--ransac-iters", type=int, default=10000)
-    parser.add_argument("--ransac-sample-size", type=float, default=0.2)
-    parser.add_argument("--ransac-distance-threshold", type=float, default=0.1)
     parser.add_argument(
-        "--ransac-accepted-threshold", type=float, default=0.01
+        "--ransac-iters",
+        type=int,
+        default=10000,
+        help="Number of iterations of the Ransac algorithm",
     )
-    parser.add_argument("--save-path", type=str, default="./out_imgs")
-    parser.add_argument("--distance-method", type=str, default="euclidean")
-    # parser.add_argument('--experiment', type=bool, default=False)
-    parser.add_argument("--top-matches", type=float, default=0.04)
+    parser.add_argument(
+        "--ransac-sample-size",
+        type=float,
+        default=0.2,
+        help="Relative sample size of Ransac algorithm",
+    )
+    parser.add_argument(
+        "--ransac-distance-threshold",
+        type=float,
+        default=0.1,
+        help="Distance threshold used by Ransac to define inliers and outliers",
+    )
+    parser.add_argument(
+        "--ransac-accuracy-threshold",
+        type=float,
+        default=0.01,
+        help="Relative threshold applied to all models. For example a threshold of 0.1 will select 10 percent best models according to accuracy",
+    )
+    parser.add_argument(
+        "--save-path",
+        type=str,
+        default="./out_imgs_new",
+        help="Where to save the plots",
+    )
+    parser.add_argument(
+        "--distance-method",
+        type=str,
+        default="euclidean",
+        choices=("euclidean", "correlation"),
+        help="Distance method used to find the matches",
+    )
+    parser.add_argument(
+        "--top-matches",
+        type=float,
+        default=0.04,
+        help="Relative threshold applied to the matches. For example a threshold of 0.1 will select 10 percent closest matches.",
+    )
     args = parser.parse_args()
     print(json.dumps(args.__dict__, indent=4))
-    # if args.experiment:
-    #    pass
-    results = stitch(**args.__dict__)
-    print_resuts(args.__dict__, results)
+    do_experiment = False
+    if not do_experiment:
+        results = stitch(**args.__dict__)
+        print_resuts(args.__dict__, results)
+    else:
+        experiment(args.__dict__)
 
 
 if __name__ == "__main__":
