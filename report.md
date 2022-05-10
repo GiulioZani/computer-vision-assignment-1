@@ -11,12 +11,15 @@ The Corner Harris are computed as described in the assignment detail using `skim
 
 
 ## Selecting Descriptors
-To select the descriptors and keypoints, I have used the `cv2.SIFT_create()` function. Resulting in the following image:
+To select the descriptors and keypoints, I have used the `cv2.SIFT_create()` function.
+
+Resulting in the following image: 
 ![Features](out_imgs/keypoints.png "Title")
 After the descriptors are extracted, they are selected based on their distance between all of the descriptors of the other image. This will yield a NxM matrix, where N is the number of descriptors found in the left image and M in the right. The minimum for each row is found and then the descriptors are selected usign a threshold that is *relative*. So if `t` is the threshold, and `k` is the number of descriptors:
 
-$$ k = tN $$
-
+<p align="center">
+  <img src="https://latex.codecogs.com/svg.image?k = tN" />
+</p>
 As mentioned in the assigment description, there are two ways to compute the distance between two descriptors: *eucledian* and *normalized correlation*.
 The results of both techniques are reported in the following subsections.
 These results are based on the sensitivity analysis described in its corresponding section.
@@ -60,13 +63,18 @@ As requested, I have performed a sensitivity analysis on the Ransac algorithm us
 This is one of the two metrics presented.
 The other one is the error on the remaining sample of the model seleted by the Ransac algorithm. The error is thus based on MSE (mean squared error). The error is computed as follows:
 
-$$||f1'-f2||_2^2$$
+<p align="center">
+  <img src="https://latex.codecogs.com/svg.image?||f1'-f2||_2^2" />
+</p>
 
 Where `f1` and `f2` are the matching keypoints of the two images, and `f1'` are the keypoints after applying a model.
 
 The accuracy is given by:
 
-$$\frac{i}{i + o}$$
+<p align="center">
+  <img src="https://latex.codecogs.com/svg.image?\frac{i}{i&space;&plus;&space;o}" />
+</p>
+
 
 Where `i` is the number of inliers and `o` is the number of outliers (which are also selected on the basis of the euclidian distance).
 
@@ -75,7 +83,8 @@ To stitch the images, we first compute the corners of the left image.
 Then we apply the model selected by Ransac to them and get a translation matrix which we can use to warp our image using the `cv2.warpPerspective` function. Then we create a new model based on this translation matrix and apply it the right image to get also the right warped image.
 Once we have both images warped we can stitch them together by looping through every pixel. We will select non-black pixel of each image (if any).
 ![Stiched Images](out_imgs/stitched.png "Stitched Images")
-## Experimenting with Hyperparameters
+
+## Experiments
 
 To find out the optimal hyperparameters, I have created a loop that evalues the error of the model for different values given by a range.
 
@@ -92,3 +101,29 @@ Interestingly, the two metrics don't seem to be proportional to each others.
 Given the accuracies of all the models, the accuracy threshold selects the top percentage of the models that will subsequently be selected according to error.
 
 ![Stiched Images](out_imgs/accuracy_threshold_0.1_0.5.png "Stitched Images")
+
+### Other images
+## Image 2
+### Hyperparameters
+| ransac iters | ransac sample size | ransac distance threshold | ransac accuracy threshold | distance method | top matches |
+|-----|-----|-----|-----|-----|-----|
+| 10000 | 0.2 | 0.1 | 0.01 | euclidean | 0.04 |
+
+### Results
+| accuracy | error |
+|-----|-----|
+| 0.03614 | 0.03401 |
+
+![Stiched Images](out_imgs_new/stitched.png "Stitched Images")
+
+## Image 3
+### Hyperparameters
+| ransac iters | ransac sample size | ransac distance threshold | ransac accuracy threshold | distance method | top matches |
+|-----|-----|-----|-----|-----|-----|
+| 10000 | 0.2 | 0.1 | 0.01 | euclidean | 0.04 |
+![Stiched Images](out_imgs_new2/stitched.png "Stitched Images")
+
+### Results
+| accuracy | error |
+|-----|-----|
+| 0.11404 | 0.04336 |
